@@ -28,12 +28,17 @@ async function init() {
   gamepad = new GamepadManager();
 
   gamepad.onConnect = (gp) => {
-    gpStatus.textContent = '手柄已连接 · ' + (gp.id || 'Gamepad').slice(0, 28);
+    const name = (gp.id || 'Gamepad').slice(0, 26);
+    gpStatus.textContent = '手柄已连接 · ' + name;
     gpDot.className = 'dot ok';
+    console.log('[Main] Gamepad connected:', gp.id);
+
+    // Auto-start if user already clicked the button
     if (!started) {
-      // Ready to start after gesture
+      // keep center message until explicit start, but show status
     }
   };
+
   gamepad.onDisconnect = () => {
     gpStatus.textContent = '手柄已断开';
     gpDot.className = 'dot warn';
@@ -62,22 +67,38 @@ async function init() {
 
   // UI button — required user gesture for iOS Gamepad API
   connectBtn.addEventListener('click', () => {
+    connectBtn.textContent = '正在检测... 请按手柄任意键';
+    connectBtn.disabled = true;
+
     const found = gamepad.pollForConnection();
-    if (found || gamepad.isConnected) {
-      centerMsg.classList.add('hidden');
-      started = true;
-      gpStatus.textContent = '手柄已连接 · 游戏中';
-      gpDot.className = 'dot ok';
-    } else {
-      connectBtn.textContent = '未检测到手柄 — 请确认已配对并再试';
-      setTimeout(() => { connectBtn.textContent = '检测并连接手柄'; }, 2200);
-    }
+
+    // Give iOS Safari a few seconds to populate the gamepad list
+    let checkCount = 0;
+    const checkInterval = setInterval(() => {
+      checkCount++;
+      if (gamepad.isConnected || gamepad.pollForConnection()) {
+        clearInterval(checkInterval);
+        centerMsg.classList.add('hidden');
+        started = true;
+        gpStatus.textContent = '手柄已连接 · 游戏中';
+        gpDot.className = 'dot ok';
+        connectBtn.textContent = '检测并连接手柄';
+        connectBtn.disabled = false;
+      } else if (checkCount >= 30) {
+        // 3 seconds
+        clearInterval(checkInterval);
+        connectBtn.textContent = '未检测到 — 请按手柄按键后再点';
+        connectBtn.disabled = false;
+        setTimeout(() => {
+          connectBtn.textContent = '检测并连接手柄';
+        }, 2500);
+      }
+    }, 100);
   });
 
   // Also listen for automatic connect events
   window.addEventListener('gamepadconnected', () => {
     if (!started) {
-      // Still need the button gesture on many iOS versions
       gpStatus.textContent = '手柄已检测到 · 请点击按钮开始';
       gpDot.className = 'dot ok';
     }
