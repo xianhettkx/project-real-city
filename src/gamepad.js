@@ -1,7 +1,7 @@
 /**
  * PROJECT REAL CITY — Gamepad Module
  * Strict physical Bluetooth gamepad only (飞智沙漠狐 / standard Gamepad API)
- * No touch controls of any kind.
+ * Enhanced for iOS Safari compatibility
  */
 
 export class GamepadManager {
@@ -19,13 +19,14 @@ export class GamepadManager {
     this._prevButtons = {};
     this.onConnect = null;
     this.onDisconnect = null;
+    this._pollTimer = null;
 
     window.addEventListener('gamepadconnected', (e) => this._onConnect(e));
     window.addEventListener('gamepaddisconnected', (e) => this._onDisconnect(e));
   }
 
   _onConnect(e) {
-    console.log('[Gamepad] Connected:', e.gamepad.id, e.gamepad.index);
+    console.log('[Gamepad] Connected event:', e.gamepad.id, 'index:', e.gamepad.index);
     this.gamepadIndex = e.gamepad.index;
     this.connected = true;
     if (this.onConnect) this.onConnect(e.gamepad);
@@ -42,14 +43,41 @@ export class GamepadManager {
     }
   }
 
-  /** Call once from a user gesture (button click) to unlock Gamepad API on iOS */
+  /**
+   * Strong detection for iOS Safari.
+   * Must be called from a user gesture (button click).
+   * Also starts a short continuous poll because Safari often
+   * only populates getGamepads() after the user presses a button.
+   */
   pollForConnection() {
+    // Immediate check
+    if (this._scanPads()) return true;
+
+    // iOS Safari often needs a short delay + button press
+    // Start aggressive polling for 4 seconds
+    if (this._pollTimer) clearInterval(this._pollTimer);
+
+    let attempts = 0;
+    this._pollTimer = setInterval(() => {
+      attempts++;
+      if (this._scanPads() || attempts > 40) {
+        clearInterval(this._pollTimer);
+        this._pollTimer = null;
+      }
+    }, 100);
+
+    return false;
+  }
+
+  _scanPads() {
     const pads = navigator.getGamepads ? navigator.getGamepads() : [];
     for (let i = 0; i < pads.length; i++) {
       const p = pads[i];
       if (p && p.connected) {
+        // Accept any connected gamepad
         this.gamepadIndex = p.index;
         this.connected = true;
+        console.log('[Gamepad] Found:', p.id, 'index:', p.index, 'buttons:', p.buttons.length, 'axes:', p.axes.length);
         if (this.onConnect) this.onConnect(p);
         return true;
       }
@@ -58,16 +86,27 @@ export class GamepadManager {
   }
 
   update() {
-    if (!this.connected || this.gamepadIndex === null) return;
+    // Always try to re-scan if not connected (helps on iOS)
+    if (!this.connected) {
+      this._scanPads();
+      return;
+    }
+
+    if (this.gamepadIndex === null) return;
 
     const pads = navigator.getGamepads();
     const gp = pads[this.gamepadIndex];
     if (!gp || !gp.connected) {
-      this.connected = false;
+      // Try to find another one
+      if (!this._scanPads()) {
+        this.connected = false;
+        this.gamepadIndex = null;
+      }
       return;
     }
 
     // Axes: 0=LX, 1=LY, 2=RX, 3=RY  (standard mapping)
+    // Some controllers put right stick on axes 2/3 or 3/4
     const applyDeadzone = (v) => {
       const abs = Math.abs(v);
       if (abs < this.deadzone) return 0;
@@ -75,13 +114,27 @@ export class GamepadManager {
       return sign * ((abs - this.deadzone) / (1 - this.deadzone));
     };
 
-    this.state.leftStick.x = applyDeadzone(gp.axes[0] || 0) * this.sensitivity;
-    this.state.leftStick.y = applyDeadzone(gp.axes[1] || 0) * this.sensitivity;
-    this.state.rightStick.x = applyDeadzone(gp.axes[2] || 0) * this.sensitivity;
-    this.state.rightStick.y = applyDeadzone(gp.axes[3] || 0) * this.sensitivity;
+    // Standard mapping first
+    let lx = gp.axes[0] || 0;
+    let ly = gp.axes[1] || 0;
+    let rx = gp.axes[2] || 0;
+    let ry = gp.axes[3] || 0;
 
-    // Buttons (standard)
-    // 0=A, 1=B, 2=X, 3=Y, 4=LB, 5=RB, 6=LT, 7=RT, 8=Select, 9=Start, 10=L3, 11=R3
+    // Fallback for some Chinese controllers that use different axes
+    if (gp.axes.length >= 4 && Math.abs(rx) < 0.01 && Math.abs(ry) < 0.01) {
+      // try alternative
+      if (gp.axes.length > 4) {
+        rx = gp.axes[3] || 0;
+        ry = gp.axes[4] || 0;
+      }
+    }
+
+    this.state.leftStick.x = applyDeadzone(lx) * this.sensitivity;
+    this.state.leftStick.y = applyDeadzone(ly) * this.sensitivity;
+    this.state.rightStick.x = applyDeadzone(rx) * this.sensitivity;
+    this.state.rightStick.y = applyDeadzone(ry) * this.sensitivity;
+
+    // Buttons (standard mapping)
     const btnMap = {
       a: 0, b: 1, x: 2, y: 3,
       lb: 4, rb: 5, lt: 6, rt: 7,
@@ -102,7 +155,6 @@ export class GamepadManager {
       this._prevButtons[name] = pressed;
     }
 
-    // Triggers as analog
     this.state.triggers.lt = gp.buttons[6] ? gp.buttons[6].value : 0;
     this.state.triggers.rt = gp.buttons[7] ? gp.buttons[7].value : 0;
   }
